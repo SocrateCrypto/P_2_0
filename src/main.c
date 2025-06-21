@@ -30,6 +30,7 @@
 #include "USER_DEFINES/print_log.h"
 #include "USER_DEFINES\power_info.h"
 #include "Timer/timer.h"
+#include "Debounce/anti_debounce.h"
 #include <math.h>
 /* USER CODE END Includes */
 
@@ -137,9 +138,9 @@ int main(void)
   MX_TIM4_Init();
   MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
-    HAL_TIM_Base_Start_IT(&htim1); // Запуск таймера у режимі переривань
-  /* USER CODE END 2 */
-    ARGB_Init();                   // Ініціалізація ARGB
+  HAL_TIM_Base_Start_IT(&htim1); // Запуск таймера у режимі переривань
+                                 /* USER CODE END 2 */
+  ARGB_Init();                   // Ініціалізація ARGB
   NRF24_ini();                   // Ініціалізація NRF24L01
 
   ARGB_FillRGB(255, 0, 0); // Заповнення ARGB червоним кольором
@@ -155,72 +156,108 @@ int main(void)
   /* USER CODE BEGIN WHILE */
 
   // Глобальный тикер для таймера
-TimerTicker buzzer_ticker = {0};
+  TimerTicker buzzer_ticker = {0};
 
-// Функция-обёртка для BUZZER_Go
-void buzzer_action() {
+  // Функция-обёртка для BUZZER_Go
+  void buzzer_action()
+  {
     BUZZER_Go(TBUZ_50, TICK_2);
-}
+  }
 
-// Глобальний тикер для blink_green_with_period
-TimerTicker blink_green_ticker = {0};
+  // Глобальний тикер для blink_green_with_period
+  TimerTicker blink_green_ticker = {0};
 
-// Функція-обёртка для blink_green_with_period
-void blink_green_action() {
+  // Функція-обёртка для blink_green_with_period
+  void blink_green_action()
+  {
     blink_red_with_period(2, 50);
     BUZZER_Go(TBUZ_200, TICK_1);
-}
+  }
+
+  DebounceButton left_btn, right_btn, both;
+  // Ініціалізація кнопок з антидребезгом
+
+  debounce_init(&both, GPIOB, BOTH_Pin, 10); // 8циклів для стабільності
+  debounce_init(&left_btn, GPIOB, LEFT_Pin, 10);   // 8 циклов для устойчивости
+  debounce_init(&right_btn, GPIOB, RIGHT_Pin, 10);
 
   while (1)
   {
-    blink_tick(); // Виклик функції для керування блиманням LED
+    blink_tick(); // Виклик функції тікера для керування блиманням LED
     // Зчитування напруги на зовнішній батареї через дільник
     float ext_voltage = adc(ADC_CHANNEL_0, EXT_BATTERY_DIVIDER_COEFF, "BAT_EXTERNAL");
 
     // Якщо напруга на "ADC" більше порогу — вважаємо, що підключена зовнішня батарея
     // усі порогові напруги записані в файлі src\USER_DEFINES\user_defines.h
-    // і можуть корегуватися при налаштуванні після прошивки плати для точнішого визначення напруги
+    // і можуть корегуватися при налаштуванні  плати для точнішого визначення напруги
     bool ext_power = (ext_voltage > EXT_POWER_PRESENT_THRESHOLD);
 
     update_power_state(ext_power);
+     uint8_t left_state = debounce_read(&left_btn);// антидребезг
+      uint8_t right_state = debounce_read(&right_btn);// антидребезг
+    uint8_t both_state = debounce_read(&both); // антидребезг
 
-  if (power_info.power_state == POWER_EXTERNAL) {
+    if (power_info.power_state == POWER_EXTERNAL)
+    {
       // Дії при живленні від зовнішньої батареї
-      HAL_GPIO_WritePin(GPIOB, LEFT_REM_Pin, HAL_GPIO_ReadPin(GPIOB, LEFT_Pin));//
-      HAL_GPIO_WritePin(GPIOB, RIGHT_REM_Pin, HAL_GPIO_ReadPin(GPIOB, RIGHT_Pin));
-  } else if (power_info.power_state == POWER_INTERNAL_BATTERY) {
-      // Дії при живленні від внутрішньої батареї
-      if (HAL_GPIO_ReadPin(GPIOB, LEFT_Pin) != GPIO_PIN_RESET ||
-          HAL_GPIO_ReadPin(GPIOB, RIGHT_Pin) != GPIO_PIN_RESET) {
-          HAL_GPIO_WritePin(GPIOB, LEFT_REM_Pin, GPIO_PIN_RESET);
-          HAL_GPIO_WritePin(GPIOB, RIGHT_REM_Pin, GPIO_PIN_RESET);
+       // Інвертуємо вихід який йде на основну плату , якщо його стан збігається зі станом входу.
+      // Це потрібно, тому що педаль (кнопка) притягує вхід до землі (лог. 0),
+      // а у відпущеному стані вхід підтягнутий до плюса (лог. 1).
+      // Сигнал передається на оптопару, де потрібна інверсія.
+
+      if (left_state == HAL_GPIO_ReadPin(GPIOB, LEFT_REM_Pin))
+      {
+        HAL_GPIO_WritePin(GPIOB, LEFT_REM_Pin, !left_state);
+
+        printf("Left REM Pin: %d\n", HAL_GPIO_ReadPin(GPIOB, LEFT_REM_Pin));
       }
-  }
-  if (power_info.battery_state == BATTERY_GOOD) {
-    // Дії при хорошому рівні заряду батареї
-   
-  } else if (power_info.battery_state == BATTERY_MEDIUM) {
-     // Вызов BUZZER_Go каждые 10 секунд
-        call_every_seconds(&buzzer_ticker, 300, buzzer_action);
-   
-  } else if (power_info.battery_state == BATTERY_BAD || power_info.battery_state == BATTERY_VERY_BAD) {
-    // Дії при поганому або дуже поганому рівні заряду батареї
-    // Вызов blink_green_with_period каждые 5 секунд
-        call_every_seconds(&blink_green_ticker, 30, blink_green_action);
-  } else {
-    // Невідомий стан батареї
-    //  вивести повідомлення про помилку або попередження
-    printf("Unknown battery state!\n");
-  }
-  {
-    /* code */
-  }
-  
-  
-       
-
-        
-
+      if (right_state == HAL_GPIO_ReadPin(GPIOB, RIGHT_REM_Pin))
+      {
+        HAL_GPIO_WritePin(GPIOB, RIGHT_REM_Pin, !right_state);
+        printf("Right REM Pin: %d\n", HAL_GPIO_ReadPin(GPIOB, RIGHT_REM_Pin));
+      }
+    }
+    else if (power_info.power_state == POWER_INTERNAL_BATTERY)
+    {
+      // Дії при живленні від внутрішньої батареї
+     // при внутрішній батареї лінія LEFT_REM RIGHT_REM не повинна працювати і
+     // на всяк випадок перевіримо чи вона в стані "нуль" якщо ні то притисткаємо
+      if (HAL_GPIO_ReadPin(GPIOB, LEFT_REM_Pin) != GPIO_PIN_RESET)
+      {
+        HAL_GPIO_WritePin(GPIOB, LEFT_REM_Pin, GPIO_PIN_RESET);
+        printf("Left REM Pin: %d\n", HAL_GPIO_ReadPin(GPIOB, LEFT_REM_Pin));
+      }
+      if (HAL_GPIO_ReadPin(GPIOB, RIGHT_REM_Pin) != GPIO_PIN_RESET)
+      {
+        HAL_GPIO_WritePin(GPIOB, RIGHT_REM_Pin, GPIO_PIN_RESET);
+        printf("Right REM Pin: %d\n", HAL_GPIO_ReadPin(GPIOB, RIGHT_REM_Pin));
+      }
+    }
+    if (power_info.battery_state == BATTERY_GOOD)
+    {
+      // Дії при хорошому рівні заряду батареї
+    }
+    else if (power_info.battery_state == BATTERY_MEDIUM)
+    {
+      // Вызов BUZZER_Go каждые 300 секунд
+      call_every_seconds(&buzzer_ticker, 300, buzzer_action);
+    }
+    else if (power_info.battery_state == BATTERY_BAD || power_info.battery_state == BATTERY_VERY_BAD)
+    {
+      // Дії при поганому або дуже поганому рівні заряду батареї
+      // Вызов blink_green_with_period каждые 30 секунд
+      call_every_seconds(&blink_green_ticker, 30, blink_green_action); //
+    }
+    else
+    {
+      // Невідомий стан батареї
+      //  вивести повідомлення про помилку або попередження
+      printf("Unknown battery state!\n");
+    }
+    {
+     
+      // Використовуйте left_state/right_state як звичайні значення пінів
+    }
   }
 }
 
@@ -564,7 +601,7 @@ static void MX_GPIO_Init(void)
   // Налаштування інших пінів як входів
   GPIO_InitStruct.Pin = LEFT_Pin | RIGHT_Pin | BOTH_Pin | GPIO_PIN_9;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Pull = GPIO_PULLUP; // Використовуємо підтяжку до живлення
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   // Налаштування пінів керування драйверами педалей як виходів
