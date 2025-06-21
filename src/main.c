@@ -29,6 +29,7 @@
 #include "ADC/adc.h"
 #include "USER_DEFINES/print_log.h"
 #include "USER_DEFINES\power_info.h"
+#include "Timer/timer.h"
 #include <math.h>
 /* USER CODE END Includes */
 
@@ -153,6 +154,23 @@ int main(void)
   /* Нескінченний цикл */
   /* USER CODE BEGIN WHILE */
 
+  // Глобальный тикер для таймера
+TimerTicker buzzer_ticker = {0};
+
+// Функция-обёртка для BUZZER_Go
+void buzzer_action() {
+    BUZZER_Go(TBUZ_50, TICK_2);
+}
+
+// Глобальний тикер для blink_green_with_period
+TimerTicker blink_green_ticker = {0};
+
+// Функція-обёртка для blink_green_with_period
+void blink_green_action() {
+    blink_red_with_period(2, 50);
+    BUZZER_Go(TBUZ_200, TICK_1);
+}
+
   while (1)
   {
     blink_tick(); // Виклик функції для керування блиманням LED
@@ -178,15 +196,30 @@ int main(void)
           HAL_GPIO_WritePin(GPIOB, RIGHT_REM_Pin, GPIO_PIN_RESET);
       }
   }
+  if (power_info.battery_state == BATTERY_GOOD) {
+    // Дії при хорошому рівні заряду батареї
+   
+  } else if (power_info.battery_state == BATTERY_MEDIUM) {
+     // Вызов BUZZER_Go каждые 10 секунд
+        call_every_seconds(&buzzer_ticker, 300, buzzer_action);
+   
+  } else if (power_info.battery_state == BATTERY_BAD || power_info.battery_state == BATTERY_VERY_BAD) {
+    // Дії при поганому або дуже поганому рівні заряду батареї
+    // Вызов blink_green_with_period каждые 5 секунд
+        call_every_seconds(&blink_green_ticker, 30, blink_green_action);
+  } else {
+    // Невідомий стан батареї
+    //  вивести повідомлення про помилку або попередження
+    printf("Unknown battery state!\n");
+  }
+  {
+    /* code */
+  }
   
   
+       
 
-
-
-
-
-
-
+        
 
   }
 }
