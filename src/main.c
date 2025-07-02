@@ -26,7 +26,11 @@
 #include "RGB/ARGB.h"
 #include "BUZZER/buzzer.h" // підключення заголовочного файлу
 #include "NRF2_4Mhz/NRF24.h"
+#include "NRF2_4Mhz/NRF24_reg_addresses.h"
+#include <string.h>
+#include <stdbool.h>
 #include "ADC/adc.h"
+#include "RGB/my_fnc_rgb.h"
 #include "USER_DEFINES/print_log.h"
 #include "USER_DEFINES\power_info.h"
 #include "Timer/timer.h"
@@ -65,13 +69,20 @@ UART_HandleTypeDef huart1;
 // змінні для NRF модуля
 char str1[64] = {0};
 
-uint8_t buf1[20] = {0};
+uint8_t buf1[20] = {"maza facking"}; // буфер для відправки даних через NRF24L01
 
 // uint8_t dt_reg=0;
 
 uint8_t retr_cnt, dt;
 
 uint16_t i = 1, retr_cnt_full;
+
+// NRF24 змінні
+#define PLD_S 32
+uint8_t tx_addr[5] = {0x45, 0x55, 0x67, 0x10, 0x21};
+uint8_t dataT[PLD_S];
+uint32_t nrf_counter = 0; // Счетчик сообщений NRF
+bool nrf_initialized = false;
 
 /* USER CODE END PV */
 /* USER CODE END PV */
@@ -100,6 +111,16 @@ static void MX_TIM1_Init(void);
 PowerInfo power_info;
 // Прототип функції
 void update_power_state(bool is_external_power_present);
+
+// Функція ініціалізації NRF24
+void nrf24_radio_init(void);
+
+// Функція передачі даних педалей через NRF24
+void nrf24_transmit_pedal_data(uint8_t left_state, uint8_t right_state, uint8_t both_state);
+
+// Функції-обгортки для таймерів
+void buzzer_action(void);
+void blink_green_action(void);
 /* USER CODE END 0 */
 
 /**
@@ -141,7 +162,6 @@ int main(void)
   HAL_TIM_Base_Start_IT(&htim1); // Запуск таймера у режимі переривань
                                  /* USER CODE END 2 */
   ARGB_Init();                   // Ініціалізація ARGB
-  NRF24_ini();                   // Ініціалізація NRF24L01
 
   ARGB_FillRGB(255, 0, 0); // Заповнення ARGB червоним кольором
   ARGB_Show();
@@ -149,40 +169,31 @@ int main(void)
   printf("Im radio pedals v2.0!\n"); // Вивід повідомлення в UART
   HAL_Delay(500);                    // Затримка 0.5 секунда
   printf("NRF24L01 test\n");         // Вивід повідомлення в UART
-  NRF24_DebugInfo();                 // Вивід інформації про NRF24
-  blink_green_with_period(1, 100);   // Блимати зеленим 1 разів з періодом 100 мс
-  print_log();                       // Вивід інформації про стан живлення
+
+  // Ініціалізація NRF24 (тільки якщо потрібно)
+  nrf24_radio_init();
+  // Вивід інформації про NRF24
+  blink_green_with_period(1, 100); // Блимати зеленим 1 разів з періодом 100 мс
+  print_log();                     // Вивід інформації про стан живлення
   /* Нескінченний цикл */
   /* USER CODE BEGIN WHILE */
 
   // Глобальный тикер для таймера
   TimerTicker buzzer_ticker = {0};
 
-  // Функция-обёртка для BUZZER_Go
-  void buzzer_action()
-  {
-    BUZZER_Go(TBUZ_50, TICK_2);
-  }
-
   // Глобальний тикер для blink_green_with_period
   TimerTicker blink_green_ticker = {0};
 
-  // Функція-обёртка для blink_green_with_period
-  void blink_green_action()
-  {
-    blink_red_with_period(2, 50);
-    BUZZER_Go(TBUZ_200, TICK_1);
-  }
-
-  DebounceButton left_btn, right_btn, both;
+  DebounceButton left_btn, right_btn, both_btn;
   // Ініціалізація кнопок з антидребезгом
 
-  debounce_init(&both, GPIOB, BOTH_Pin, 10); // 8циклів для стабільності
-  debounce_init(&left_btn, GPIOB, LEFT_Pin, 10);   // 8 циклов для устойчивости
+  debounce_init(&left_btn, GPIOB, LEFT_Pin, 10); // 8 циклов для устойчивости
   debounce_init(&right_btn, GPIOB, RIGHT_Pin, 10);
+  debounce_init(&both_btn, GPIOB, BOTH_Pin, 10); // Кнопка BOTH
 
   while (1)
   {
+
     blink_tick(); // Виклик функції тікера для керування блиманням LED
     // Зчитування напруги на зовнішній батареї через дільник
     float ext_voltage = adc(ADC_CHANNEL_0, EXT_BATTERY_DIVIDER_COEFF, "BAT_EXTERNAL");
@@ -193,14 +204,13 @@ int main(void)
     bool ext_power = (ext_voltage > EXT_POWER_PRESENT_THRESHOLD);
 
     update_power_state(ext_power);
-     uint8_t left_state = debounce_read(&left_btn);// антидребезг
-      uint8_t right_state = debounce_read(&right_btn);// антидребезг
-    uint8_t both_state = debounce_read(&both); // антидребезг
-
+    uint8_t left_state = debounce_read(&left_btn);   // антидребезг
+    uint8_t right_state = debounce_read(&right_btn); // антидребезг
+    uint8_t both_state = debounce_read(&both_btn);   // антидребезг кнопки BOTH
     if (power_info.power_state == POWER_EXTERNAL)
     {
       // Дії при живленні від зовнішньої батареї
-       // Інвертуємо вихід який йде на основну плату , якщо його стан збігається зі станом входу.
+      // Інвертуємо вихід який йде на основну плату , якщо його стан збігається зі станом входу.
       // Це потрібно, тому що педаль (кнопка) притягує вхід до землі (лог. 0),
       // а у відпущеному стані вхід підтягнутий до плюса (лог. 1).
       // Сигнал передається на оптопару, де потрібна інверсія.
@@ -219,9 +229,9 @@ int main(void)
     }
     else if (power_info.power_state == POWER_INTERNAL_BATTERY)
     {
-      // Дії при живленні від внутрішньої батареї
-     // при внутрішній батареї лінія LEFT_REM RIGHT_REM не повинна працювати і
-     // на всяк випадок перевіримо чи вона в стані "нуль" якщо ні то притисткаємо
+      // Дії при живленні від внутрішньої батареї - використовуємо радіопередачу
+      // при внутрішній батареї лінія LEFT_REM RIGHT_REM не повинна працювати і
+      // на всяк випадок перевіримо чи вона в стані "нуль" якщо ні то притисткаємо
       if (HAL_GPIO_ReadPin(GPIOB, LEFT_REM_Pin) != GPIO_PIN_RESET)
       {
         HAL_GPIO_WritePin(GPIOB, LEFT_REM_Pin, GPIO_PIN_RESET);
@@ -232,6 +242,9 @@ int main(void)
         HAL_GPIO_WritePin(GPIOB, RIGHT_REM_Pin, GPIO_PIN_RESET);
         printf("Right REM Pin: %d\n", HAL_GPIO_ReadPin(GPIOB, RIGHT_REM_Pin));
       }
+
+      // Передача даних педалей через NRF24
+      nrf24_transmit_pedal_data(left_state, right_state, both_state);
     }
     if (power_info.battery_state == BATTERY_GOOD)
     {
@@ -253,10 +266,6 @@ int main(void)
       // Невідомий стан батареї
       //  вивести повідомлення про помилку або попередження
       printf("Unknown battery state!\n");
-    }
-    {
-     
-      // Використовуйте left_state/right_state як звичайні значення пінів
     }
   }
 }
@@ -631,6 +640,174 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+// Функция-обёртка для BUZZER_Go
+void buzzer_action()
+{
+  BUZZER_Go(TBUZ_50, TICK_2);
+}
+
+// Функція-обёртка для blink_green_with_period
+void blink_green_action()
+{
+  blink_red_with_period(2, 50);
+  BUZZER_Go(TBUZ_200, TICK_1);
+}
+
+// Ініціалізація NRF24 модуля
+void nrf24_radio_init(void)
+{
+  if (!nrf_initialized)
+  {
+    printf("Initializing NRF24L01...\n");
+
+    csn_high();
+    ce_high();
+    HAL_Delay(5);
+    ce_low();
+
+    nrf24_init();
+    nrf24_stop_listen();
+
+    nrf24_auto_ack_all(auto_ack); // Включаем автоподтверждение для всех каналов
+    nrf24_en_ack_pld(disable);
+    nrf24_dpl(disable);
+
+    nrf24_set_crc(en_crc, _1byte); // Включаем CRC для лучшего определения ошибок
+
+    nrf24_tx_pwr(_0dbm);
+    nrf24_data_rate(_1mbps);
+    nrf24_set_channel(90);
+    nrf24_set_addr_width(5);
+
+    nrf24_set_rx_dpl(0, disable);
+    nrf24_set_rx_dpl(1, disable);
+    nrf24_set_rx_dpl(2, disable);
+    nrf24_set_rx_dpl(3, disable);
+    nrf24_set_rx_dpl(4, disable);
+    nrf24_set_rx_dpl(5, disable);
+
+    nrf24_pipe_pld_size(0, PLD_S);
+
+    nrf24_auto_retr_delay(4);
+    nrf24_auto_retr_limit(10);
+
+    nrf24_open_tx_pipe(tx_addr);
+    nrf24_open_rx_pipe(0, tx_addr);
+    ce_high();
+
+    nrf_initialized = true;
+    printf("NRF24L01 initialized successfully\n");
+  }
+}
+
+// Передача даних педалей через NRF24
+void nrf24_transmit_pedal_data(uint8_t left_state, uint8_t right_state, uint8_t both_state)
+{
+  static uint8_t prev_left_state = GPIO_PIN_SET;
+  static uint8_t prev_right_state = GPIO_PIN_SET;
+  static uint8_t prev_both_state = GPIO_PIN_SET;
+  
+  // Таймеры для периодической передачи (в тиках HAL_GetTick())
+  static uint32_t left_pressed_timer = 0;
+  static uint32_t right_pressed_timer = 0;
+  
+  bool need_transmit = false;
+  
+  // Проверяем изменения состояний
+  bool left_changed = (left_state != prev_left_state);
+  bool right_changed = (right_state != prev_right_state);
+  bool both_changed = (both_state != prev_both_state);
+  
+  // Логика для левой педали
+  if (left_changed) {
+    need_transmit = true;
+    if (left_state == GPIO_PIN_RESET) { // Педаль нажата
+      left_pressed_timer = HAL_GetTick(); // Запускаем таймер
+    }
+  } else if (left_state == GPIO_PIN_RESET) { // Педаль удерживается нажатой
+    // Проверяем, прошло ли 500 мс с последней передачи
+    if ((HAL_GetTick() - left_pressed_timer) >= 500) {
+      need_transmit = true;
+      left_pressed_timer = HAL_GetTick(); // Сбрасываем таймер
+    }
+  }
+  
+  // Логика для правой педали
+  if (right_changed) {
+    need_transmit = true;
+    if (right_state == GPIO_PIN_RESET) { // Педаль нажата
+      right_pressed_timer = HAL_GetTick(); // Запускаем таймер
+    }
+  } else if (right_state == GPIO_PIN_RESET) { // Педаль удерживается нажатой
+    // Проверяем, прошло ли 500 мс с последней передачи
+    if ((HAL_GetTick() - right_pressed_timer) >= 500) {
+      need_transmit = true;
+      right_pressed_timer = HAL_GetTick(); // Сбрасываем таймер
+    }
+  }
+  
+  // Логика для кнопки BOTH (только при изменении)
+  if (both_changed) {
+    need_transmit = true;
+  }
+
+  // Передаем данные, если есть необходимость
+  if (need_transmit) {
+    // Очищаємо буфер
+    memset(dataT, 0, sizeof(dataT));
+
+    // Формуємо повідомлення зі станом педалей
+    char message[PLD_S];
+    snprintf(message, sizeof(message), "L:%d,R:%d,B:%d #%lu",
+             (left_state == GPIO_PIN_RESET) ? 1 : 0,
+             (right_state == GPIO_PIN_RESET) ? 1 : 0,
+             (both_state == GPIO_PIN_RESET) ? 1 : 0,
+             nrf_counter++);
+
+    // Копіюємо повідомлення в буфер для передачі
+    strncpy((char *)dataT, message, PLD_S - 1);
+    dataT[PLD_S - 1] = '\0'; // Гарантуємо null-terminator
+
+    // Очищаємо флаги статуса перед передачею
+    uint8_t clear_flags = 0x70; // Очищаємо TX_DS, MAX_RT, RX_DR
+    nrf24_w_reg(STATUS, &clear_flags, 1);
+
+    // Відправляємо дані через NRF24
+    uint8_t val = nrf24_transmit(dataT, PLD_S);
+    
+    // Читаємо статус регістр для детальної діагностики
+    uint8_t status_reg = nrf24_r_reg(STATUS, 1);
+
+    // Виводимо статус передачі через UART
+    printf("NRF TX: %s | Status: %d | StatusReg: 0x%02X\n", message, val, status_reg);
+    
+    // Детальний аналіз StatusReg
+    bool tx_ds = (status_reg & 0x20) != 0;   // Біт 5 - TX_DS (успішна передача)
+    bool max_rt = (status_reg & 0x10) != 0;  // Біт 4 - MAX_RT (досягнуто максимум повторів)
+    bool rx_dr = (status_reg & 0x01) != 0;   // Біт 0 - RX_DR (дані отримано)
+    
+    printf("TX_DS:%d MAX_RT:%d RX_DR:%d\n", tx_ds, max_rt, rx_dr);
+    
+    // Передача не вдалася, якщо:
+    // 1. MAX_RT встановлений (досягнуто максимум повторів)
+    // 2. TX_DS не встановлений (передача не підтверджена)
+    // 3. Функція nrf24_transmit повернула помилку
+    if (max_rt || !tx_ds || val != 0) {
+      blink_red(1); // Мигнути червоним один раз
+      printf("TX FAILED! Reason: ");
+      if (max_rt) printf("MAX_RT ");
+      if (!tx_ds) printf("NO_TX_DS ");
+      if (val != 0) printf("FUNC_ERROR ");
+      printf("\n");
+    }
+
+    // Зберігаємо поточний стан для наступного порівняння
+    prev_left_state = left_state;
+    prev_right_state = right_state;
+    prev_both_state = both_state;
+  }
+}
 
 /* USER CODE END 4 */
 
