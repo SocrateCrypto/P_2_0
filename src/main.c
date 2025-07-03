@@ -115,6 +115,20 @@ void update_power_state(bool is_external_power_present);
 // Функції-обгортки для таймерів
 void buzzer_action(void);
 void blink_green_action(void);
+
+// Переменные для управления привязкой
+typedef enum {
+    TRANSMITTER_NORMAL = 0,    // Обычный режим работы
+    TRANSMITTER_BINDING        // Режим привязки
+} transmitter_state_t;
+
+static transmitter_state_t transmitter_state = TRANSMITTER_NORMAL;
+static uint32_t both_button_press_start = 0;  // Время начала нажатия кнопки both
+static uint8_t both_button_was_pressed = 0;   // Флаг что кнопка была нажата
+static uint32_t binding_start_time = 0;       // Время начала режима привязки
+
+#define BOTH_BUTTON_HOLD_TIME 5000    // 5 секунд удержания для входа в привязку
+#define BINDING_TIMEOUT 30000         // 30 секунд таймаут привязки
 /* USER CODE END 0 */
 
 /**
@@ -237,8 +251,68 @@ int main(void)
         printf("Right REM Pin: %d\n", HAL_GPIO_ReadPin(GPIOB, RIGHT_REM_Pin));
       }
 
-      // Передача даних педалей через NRF24
-      nrf24_transmit_pedal_data(left_state, right_state, both_state);
+      // ============================================================
+      // ЛОГИКА УПРАВЛЕНИЯ ПРИВЯЗКОЙ
+      // ============================================================
+      uint32_t current_time = HAL_GetTick();
+      
+      // Проверяем логику удержания кнопки both для входа в режим привязки
+      if (transmitter_state == TRANSMITTER_NORMAL) {
+        if (both_state == GPIO_PIN_RESET) { // Кнопка both нажата
+          if (!both_button_was_pressed) {
+            // Только что нажали кнопку - запоминаем время
+            both_button_press_start = current_time;
+            both_button_was_pressed = 1;
+          } else {
+            // Кнопка удерживается - проверяем время
+            if (current_time - both_button_press_start >= BOTH_BUTTON_HOLD_TIME) {
+              // Удерживали 5 секунд - входим в режим привязки
+              transmitter_state = TRANSMITTER_BINDING;
+              binding_start_time = current_time;
+              nrf24_enter_binding_mode();
+              printf("ENTERING BINDING MODE - Hold 5 sec detected!\r\n");
+              BUZZER_Go(TBUZ_50, TICK_1);
+              // Начинаем постоянное мигание в режиме привязки (желтый, 500ms)
+              start_binding_blink(500);
+              
+              both_button_was_pressed = 0; // Сбрасываем флаг
+            }
+          }
+        } else {
+          // Кнопка both отпущена
+          both_button_was_pressed = 0;
+        }
+        
+        // В обычном режиме передаем данные педалей
+        nrf24_transmit_pedal_data(left_state, right_state, both_state);
+        
+      } else if (transmitter_state == TRANSMITTER_BINDING) {
+        // В режиме привязки
+        printf("BINDING MODE ACTIVE - binding_mode=%d, sending bind packets...\r\n", nrf24_is_binding_mode());
+        
+        // Отправляем пакеты привязки
+        nrf24_binding_loop();
+        
+        // Проверяем, не вышли ли мы из режима привязки (после успешного получения BIND_OK)
+        if (!nrf24_is_binding_mode()) {
+          printf("*** BINDING SUCCESSFUL! Exiting binding mode ***\r\n");
+          transmitter_state = TRANSMITTER_NORMAL;
+          
+          // Останавливаем постоянное мигание и показываем успех
+          stop_binding_blink();
+          blink_green_with_period(3, 100); // Индикация успешной привязки
+        }
+        // Проверяем таймаут привязки
+        else if (current_time - binding_start_time >= BINDING_TIMEOUT) {
+          printf("BINDING TIMEOUT - exiting binding mode\r\n");
+          transmitter_state = TRANSMITTER_NORMAL;
+          nrf24_exit_binding_mode();
+          
+          // Останавливаем постоянное мигание и показываем ошибку
+          stop_binding_blink();
+          blink_red_with_period(5, 50); // Индикация таймаута
+        }
+      }
     }
     if (power_info.battery_state == BATTERY_GOOD)
     {
