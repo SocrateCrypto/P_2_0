@@ -80,7 +80,7 @@ uint16_t i = 1, retr_cnt_full;
 
 // NRF24 змінні
 #define PLD_S 32
-uint8_t tx_addr[5] = {0x45, 0x55, 0x67, 0x10, 0x21};
+uint8_t tx_addr[5] = {0x45, 0x55, 0x67, 0x10, 0x21};//
 uint8_t dataT[PLD_S];
 uint32_t nrf_counter = 0; // Счетчик сообщений NRF
 
@@ -127,7 +127,7 @@ static uint32_t both_button_press_start = 0;  // Время начала наж�
 static uint8_t both_button_was_pressed = 0;   // Флаг что кнопка была нажата
 static uint32_t binding_start_time = 0;       // Время начала режима привязки
 
-#define BOTH_BUTTON_HOLD_TIME 5000    // 5 секунд удержания для входа в привязку
+#define BOTH_BUTTON_HOLD_TIME 4000    // 5 секунд удержания для входа в привязку
 #define BINDING_TIMEOUT 30000         // 30 секунд таймаут привязки
 /* USER CODE END 0 */
 

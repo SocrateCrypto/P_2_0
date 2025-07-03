@@ -16,13 +16,14 @@
 #include "main.h" // Для HAL_GetTick()
 #include <stdbool.h>
 #include "BUZZER/buzzer.h" // підключення заголовочного файлу
+#include "../USER_DEFINES/radio_settings.h" // Пользовательские настройки радиомодуля
 /* Private defines -----------------------------------------------------------*/
 #define PEDAL_TRANSMIT_PERIOD_MS 250  // Период передачи при удержании педали
 
 /* Адреса для привязки и работы */
-static uint8_t my_addr[5] = {0x12, 0x34, 0x56, 0x78, 0x9A};      // Уникальный адрес этого пульта
-static uint8_t bind_addr[5] = {0xE7, 0xE7, 0xE7, 0xE7, 0xE7};    // Стандартный адрес для привязки
-static uint8_t work_addr[5] = {0x12, 0x34, 0x56, 0x78, 0x9A};   // Текущий рабочий адрес
+static uint8_t my_addr[5] = RADIO_ADDRESS;      // Уникальный адрес этого пульта
+static uint8_t bind_addr[5] = BIND_ADDRESS;     // Стандартный адрес для привязки
+static uint8_t work_addr[5] = RADIO_ADDRESS;    // Текущий рабочий адрес
 
 /* External variables --------------------------------------------------------*/
 extern uint8_t dataT[PLD_S];

@@ -21,6 +21,7 @@
 #include <string.h>
 #include "nrf/NRF24.h"
 #include "nrf/NRF24_reg_addresses.h"
+#include "radio_settings.h"  // Пользовательские настройки радиомодуля
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
@@ -50,7 +51,7 @@ UART_HandleTypeDef huart1;
 
 #define PLD_S 32
 
-uint8_t tx_addr[5] = {0x45, 0x55, 0x67, 0x10, 0x21};
+uint8_t tx_addr[5] = RADIO_ADDRESS;  // Используем общий адрес из настроек
 
 uint16_t data = 0;
 
