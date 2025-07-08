@@ -6,6 +6,7 @@
 
 
 #include <stdint.h>
+#include <stddef.h>
 #ifndef NRF_24_H
 #define NRF_24_H
 
@@ -351,6 +352,10 @@ uint8_t nrf24_data_available(void);
  * Receive data
  */
 void nrf24_receive(uint8_t *data, uint8_t size);
+
+
+// Проверка: RX FIFO FULL
+uint8_t nrf24_rx_fifo_full(void);
 
 
 #endif

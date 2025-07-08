@@ -37,6 +37,8 @@
 #include "Timer/timer.h"
 #include "Debounce/anti_debounce.h"
 #include <math.h>
+#include "USER_DEFINES/radio_settings.h"
+static uint8_t rx_radio_addr[5] = RADIO_ADDRESS;
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -286,6 +288,72 @@ int main(void)
         // В обычном режиме передаем данные педалей
         nrf24_transmit_pedal_data(left_state, right_state, both_state);
         
+        // --- Автоматическое переключение в RX для приёма команд ---
+        nrf24_stop_listen(); // Гарантируем выход из RX перед сменой режима
+        ce_low();
+        nrf24_flush_rx(); // <--- ОЧИСТКА RX FIFO ПЕРЕД ПРИЁМОМ
+        nrf24_open_rx_pipe(0, rx_radio_addr); // Используем адрес из дефайна
+        nrf24_listen();
+        ce_high();
+        HAL_Delay(3); // Оптимальна затримка для прийому (підібрати при необхідності)
+        
+        char rx_buf[32] = {0};
+        static char last_rx_cmd[32] = {0}; // Для фильтрации повторов
+        static uint32_t last_long_beep_time = 0; // Время последнего срабатывания long_beep
+        // Обрабатываем все команды, которые накопились в RX FIFO
+        while (nrf24_data_available()) {
+            if (nrf24_receive_command(rx_buf, sizeof(rx_buf))) {
+                // Проверка на переполнение RX FIFO (ошибка приёма)
+                if (nrf24_rx_fifo_full()) {
+                    printf("[NRF RX] RX FIFO FULL! Flushing FIFO...\r\n");
+                    nrf24_flush_rx();
+                }
+                uint32_t now = HAL_GetTick();
+                if (strcmp(rx_buf, last_rx_cmd) != 0) {
+                    printf("[NRF RX] Received command: '%s'\r\n", rx_buf);
+                    if (strcmp(rx_buf, "angle_agiust_mode") == 0) {
+                        printf("[NRF RX] angle_agiust_mode command received\r\n");
+                        BUZZER_Go(TBUZ_50, TICK_10);
+                        blink_blue_with_period(100, 100);
+                    } else if (strcmp(rx_buf, "angle_agiust_exit") == 0) {
+                        printf("[NRF RX] angle_agiust_exit command received\r\n");
+                        BUZZER_Go(TBUZ_50, TICK_1);
+                        blink_red_with_period(2, 100);
+                        blink_blue_with_period(1, 100);
+                    } else if (strcmp(rx_buf, "long_beep") == 0) {
+                        if (now - last_long_beep_time > 1000) {
+                            printf("[NRF RX] long_beep command received\r\n");
+                            BUZZER_Go(TBUZ_1000, TICK_1); // 1 секунда (20*50мс)
+                            last_long_beep_time = now;
+                        } else {
+                            printf("[NRF RX] long_beep ignored (debounce)\r\n");
+                        }
+                    }
+                    strncpy(last_rx_cmd, rx_buf, sizeof(last_rx_cmd)-1);
+                    last_rx_cmd[sizeof(last_rx_cmd)-1] = '\0';
+                } else {
+                    // Повтор команди, игнорируем
+                    if (strcmp(rx_buf, "long_beep") == 0) {
+                        // Для long_beep — фильтр по времени
+                        uint32_t now = HAL_GetTick();
+                        if (now - last_long_beep_time > 1000) {
+                            printf("[NRF RX] long_beep command received (after timeout)\r\n");
+                            BUZZER_Go(TBUZ_1000, TICK_1); // 1 секунда (20*50мс)
+                            last_long_beep_time = now;
+                        } else {
+                            printf("[NRF RX] Duplicate long_beep ignored (debounce)\r\n");
+                        }
+                    } else {
+                        printf("[NRF RX] Duplicate command '%s' ignored\r\n", rx_buf);
+                    }
+                }
+            }
+        }
+        nrf24_stop_listen(); // Возвращаемся в режим передачи
+        ce_low();
+        nrf24_open_tx_pipe(rx_radio_addr); // Для возврата в TX тоже используем этот адрес
+        ce_high();
+        
       } else if (transmitter_state == TRANSMITTER_BINDING) {
         // В режиме привязки
         printf("BINDING MODE ACTIVE - binding_mode=%d, sending bind packets...\r\n", nrf24_is_binding_mode());
@@ -308,7 +376,7 @@ int main(void)
           transmitter_state = TRANSMITTER_NORMAL;
           nrf24_exit_binding_mode();
           
-          // Останавливаем постоянное мигание и показываем ошибку
+          // Останавлием постоянное мигание и показываем ошибку
           stop_binding_blink();
           blink_red_with_period(5, 50); // Индикация таймаута
         }
@@ -709,7 +777,7 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
-// Функция-обёртка для BUZZER_Go
+// Функція-обёртка для BUZZER_Go
 void buzzer_action()
 {
   BUZZER_Go(TBUZ_50, TICK_2);

@@ -10,6 +10,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include "main.h"
 
 /* Определения для передачи данных */
@@ -61,5 +62,6 @@ uint8_t nrf24_is_binding_mode(void);
 void nrf24_send_bind_packet(void);
 void nrf24_binding_loop(void);  // Функция для вызова из основного цикла
 uint8_t nrf24_check_bind_response(void);  // Проверка ответа BIND_OK
+uint8_t nrf24_receive_command(char *buf, size_t len);
 
 #endif /* NRF24_TRANSMIT_H */
